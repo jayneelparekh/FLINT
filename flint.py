@@ -22,13 +22,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.autograd import Variable
-from torchvision import datasets, transforms, models
+from torchvision import datasets, transforms
 import networks
 #import segnet
 import itertools, time
 
 import numpy as np
-np.random.seed(21)
+#np.random.seed(21)
 import dataloader as dl
 
 #import utils
@@ -49,7 +49,7 @@ test_shuffle = True
 train_epoch_info = []
 test_epoch_info = []
 
-dataset = str(args[1]) # Options: qdraw, mnist, fmnist, cifar10
+dataset = str(args[1]) # Options: qdraw, mnist, fmnist, cifar10. 'cub option not fully suitable'
 
 if dataset == 'qdraw':
     n_classes = 10
@@ -58,18 +58,23 @@ if dataset == 'qdraw':
     test_data = dl.QuickDraw(ncat=n_classes, mode='test', root_dir=home_dir + '/datasets/data_quickdraw/')
     train_loader = torch.utils.data.DataLoader( dl.QuickDraw(ncat=n_classes, mode='train', root_dir=home_dir + '/datasets/data_quickdraw/'), batch_size=64, shuffle=train_shuffle, num_workers=0 )
     test_loader = torch.utils.data.DataLoader( dl.QuickDraw(ncat=n_classes, mode='test', root_dir=home_dir + '/datasets/data_quickdraw/'), batch_size=32, shuffle=test_shuffle, num_workers=0 )
+
 elif dataset == 'mnist':
+    n_classes = 10
     N_EPOCH = 12
     train_loader = torch.utils.data.DataLoader( datasets.MNIST(home_dir + '/datasets/MNIST', train=True, download=True, transform=transforms.Compose([ transforms.ToTensor() ])), batch_size=16, shuffle=train_shuffle, num_workers=0)
     test_loader = torch.utils.data.DataLoader( datasets.MNIST(home_dir + '/datasets/MNIST', train=False, download=True, transform=transforms.Compose([ transforms.ToTensor() ])), batch_size=16, shuffle=test_shuffle, num_workers=0)
     train_data = datasets.MNIST(home_dir + '/datasets/MNIST', train=True, download=True, transform=transforms.Compose([ transforms.ToTensor() ]))
     test_data = datasets.MNIST(home_dir + '/datasets/MNIST', train=False, download=True, transform=transforms.Compose([ transforms.ToTensor() ]))
+
 elif dataset == 'fmnist':
+    n_classes = 10
     N_EPOCH = 12
     train_data = datasets.FashionMNIST(home_dir + '/datasets/FashionMNIST', train=True, download=True, transform=transforms.Compose([ transforms.ToTensor() ]))
     test_data = datasets.FashionMNIST(home_dir + '/datasets/FashionMNIST', train=False, download=True, transform=transforms.Compose([ transforms.ToTensor() ]))  
     train_loader = torch.utils.data.DataLoader( datasets.FashionMNIST(home_dir + '/datasets/FashionMNIST', train=True, download=True, transform=transforms.Compose([ transforms.ToTensor() ])), batch_size=16, shuffle=train_shuffle, num_workers=0)
     test_loader = torch.utils.data.DataLoader( datasets.FashionMNIST(home_dir + '/datasets/FashionMNIST', train=False, download=True, transform=transforms.Compose([ transforms.ToTensor() ])), batch_size=16, shuffle=test_shuffle, num_workers=0)
+
 elif dataset == 'cifar10':
     n_classes = 10
     N_EPOCH = 25
@@ -79,6 +84,17 @@ elif dataset == 'cifar10':
     test_loader = torch.utils.data.DataLoader( datasets.CIFAR10(home_dir + '/datasets', train=False, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize(norm_mean, norm_std) ])), batch_size=32, shuffle=test_shuffle, num_workers=20)
     train_data = datasets.CIFAR10(home_dir + '/datasets', train=True, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize(norm_mean, norm_std) ]))
     test_data = datasets.CIFAR10(home_dir + '/datasets', train=False, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize(norm_mean, norm_std) ]))
+
+elif dataset == 'cub':
+    N_EPOCH = 51
+    n_classes = 200
+    cub_dir = home_dir + '/datasets/CUB_200_2011/'
+    norm_mean = (0.485, 0.456, 0.406)
+    norm_std = (0.229, 0.224, 0.225)
+    train_data = dl.CUB11(cub_dir, im_size=(224, 224), transform=transforms.Compose([ transforms.RandomCrop(224, padding=8), transforms.RandomHorizontalFlip(), transforms.ToTensor(), transforms.Normalize(norm_mean, norm_std) ]) )
+    test_data = dl.CUB11(cub_dir, 'test', im_size=(224, 224), transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize(norm_mean, norm_std) ]) )
+    train_loader = torch.utils.data.DataLoader( train_data, batch_size=16, shuffle=train_shuffle, num_workers=16 )
+    test_loader = torch.utils.data.DataLoader( test_data, batch_size=16, shuffle=test_shuffle, num_workers=16 )
 
 print ('Dataloader ready')
 
@@ -114,7 +130,17 @@ elif dataset == 'cifar10':
     h = networks.explainer(in_size=latent_size, n_classes=10).to(device)
     optimizer = optim.Adam(itertools.chain(f.parameters(), g.parameters(), d.parameters(), h.parameters()), lr=0.0001)
 
+elif dataset == 'cub':
+    latent_size = 180 # 200 when testing for ref3 model
+    f = networks.MyResNet_full(n_classes=200).to(device)
+    g = networks.attr_RN18_multi_v2(out_size=latent_size, mid_maps=256).to(device)
+    d = networks.decoder_v2(in_size=latent_size).to(device)
+    h = networks.explainer(in_size=latent_size, n_classes=200).to(device)
+    optimizer = optim.Adam(itertools.chain(f.parameters(), g.parameters(), h.parameters(), d.parameters()), lr=0.0002)
+
+
 def unnorm(img, norm_mean, norm_var):
+    # HELPER function to make normalized images suitable for matplotlib color image imshow
     # img assumed as numpy array, other two as array/list like
     ndim = img.shape[0]
     new_im = 0 + img
@@ -123,30 +149,36 @@ def unnorm(img, norm_mean, norm_var):
     return np.moveaxis(new_im, 0, -1)
 
 
-def analyze(f, g, h, d, device, test_loader, location):
+def analyze(f, g, h, d, device, test_loader, n_classes=10):
     f.eval(), g.eval(), h.eval(), d.eval()
     f, g, h, d = f.to(device), g.to(device), h.to(device), d.to(device)
-    batch_size = int(sample_data.shape[0])
-    conf_matx_fy = np.zeros([10, 10]) # n_classes x n_classes
-    conf_matx_hf = np.zeros([10, 10])
-    conf_matx_hy = np.zeros([10, 10])
+    batch_size = int(next(iter(test_loader))[0].shape[0])
+    conf_matx_fy = np.zeros([n_classes, n_classes]) # n_classes x n_classes
+    conf_matx_hf = np.zeros([n_classes, n_classes])
+    conf_matx_hy = np.zeros([n_classes, n_classes])
+    top5_fid = 0
     for batch_info in test_loader:
-        data, target = batch_info[0].to(device), batch_info[1].to(device)
+        #data, target, locs = batch_info[0].to(device), batch_info[1].to(device), batch_info[2].to(device)
+        data, target = batch_info[0].to(device), batch_info[1].to(device)                                 # For MNIST
         output, inter = f(data)
         embed = g(inter)
         rec_data, expl = d(embed), h(embed)
         pred_f = output.argmax(dim=1).cpu().data.numpy()
         pred_h = expl.argmax(dim=1).cpu().data.numpy()
+        hp_full = expl.cpu().data.numpy()
         y = target.cpu().data.numpy()
         for j in range(y.shape[0]):
             conf_matx_fy[pred_f[j], y[j]] += 1
             conf_matx_hf[pred_h[j], pred_f[j]] += 1
             conf_matx_hy[pred_h[j], y[j]] += 1
-
+            if pred_f[j] in (-1*hp_full[j]).argsort()[:5]:
+                top5_fid += 1
+    print ("Top 5 fidelity total", top5_fid)
     return conf_matx_fy, conf_matx_hf, conf_matx_hy
 
 
-def collect_g_data(f, g, h, device, data, subset=False):
+def collect_g_data(f, g, h, device, data, subset=False, batch_limit=50):
+    # HELPER function during global interpretations. Computes full details of interpreter outputs for a subset of the data 
     f.eval(), g.eval(), h.eval()
     f, g, h = f.to(device), g.to(device), h.to(device)
     weights = h.fc1.weight.cpu().data.numpy()
@@ -178,7 +210,7 @@ def collect_g_data(f, g, h, device, data, subset=False):
                 expl[i] = embed[i].cpu().data.numpy() * weights[pred[i]]
                 expl[i] = expl[i]/expl[i].max()
             expl_data.append(expl)
-            if num_batch > 50:
+            if num_batch > batch_limit:
                 subset_data = torch.cat(subset_data).unsqueeze(dim=1) #unsqueeze is done to make code in save image functions compatible with shape of subset_data
                 break
     g_data = np.concatenate(g_data)
@@ -187,6 +219,7 @@ def collect_g_data(f, g, h, device, data, subset=False):
     return g_data, np.array(all_y), subset_data, expl_data, np.array(expl_pred)
 
 def loss_cce(prediction, target):
+    # HELPER function. Computes generalized cross-entropy loss
     # Assume shape of batch_size x n_classes with unnormalized class scores for prediction and target
     # Compute softmax to get class probabilities and then take compute cross entropy loss
     p = nn.Softmax(dim=1)(prediction)
@@ -195,8 +228,83 @@ def loss_cce(prediction, target):
     return loss
 
 
+def single_pair(indices, data, i, j, f, g, device, dataset, model_name='', RI=False):
+    # Function specifically designed for CUB200
+    # i, j is attribute-class indices. also assumes indices and data as input
+    for k in range(indices.shape[1]):
+        if indices[j, k, i] == -1:
+            continue
+        img = unnorm(data[indices[j, k, i]][0].cpu().data.numpy(), norm_mean, norm_std)
+        
+        #print (unnorm(init_img[0].cpu().data.numpy(), norm_mean, norm_std).shape)
+        if dataset == 'cub':
+            init_img = 0.5*data[indices[j, k, i]] 
+            cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=init_img, lmbd_bound=20.0, lmbd_tv=80.0, C=4.0, lmbd_l1=0.0, n_iter=200)
+            #cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=torch.tensor(cur_img).float(), lmbd_bound=20.0, lmbd_tv=200.0, C=4.0, lmbd_l1=0.0, n_iter=200)
+            cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=torch.tensor(cur_img).float(), lmbd_bound=20.0, lmbd_tv=240.0, C=4.0, lmbd_l1=0.0, n_iter=180)
+            #cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=torch.tensor(cur_img).float(), lmbd_bound=20.0, lmbd_tv=150.0, C=4.0, lmbd_l1=0.0, n_iter=200)
+            #cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=torch.tensor(cur_img).float(), lmbd_bound=20.0, lmbd_tv=200.0, C=4.0, lmbd_l1=0.0, n_iter=200)
+        #elif dataset == 'cifar10' or dataset == 'cifar100':
+        #    init_img = 0.4*data[indices[j, k, i]] 
+        #    cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=init_img, lmbd_bound=20.0, lmbd_tv=10.0, C=4.0, lmbd_l1=0.0, n_iter=200)
+        #    cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=torch.tensor(cur_img).float(), lmbd_bound=20.0, lmbd_tv=30.0, C=4.0, lmbd_l1=0.0, n_iter=200)
+        fig = plt.figure()
+        fig.add_subplot(1, 3, 1)
+        plt.imshow(img)
+        plt.axis('off')
+        fig.add_subplot(1, 3, 2)
+        plt.imshow(unnorm(init_img[0].cpu().data.numpy(), norm_mean, norm_std))
+        plt.axis('off')
+        fig.add_subplot(1, 3, 3)
+        plt.imshow(unnorm(cur_img[0], norm_mean, norm_std))
+        plt.axis('off')
+        #fig.add_subplot(1, 4, 4)
+        #plt.imshow(unnorm(cur_img[0], norm_mean, norm_std).mean(axis=2) )
+        #plt.axis('off')
+        fig.subplots_adjust(wspace=0.04) 
+        plt.savefig('output/' + dataset + '_output/explanation_images_' + model_name  + '/attr' + str(i) + '_class' + str(j) + '_' + str(k), bbox_inches='tight', pad_inches = 0.03)
+        plt.close()
+
+    # AM with Random Initialization
+    if RI:
+        cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=None, lmbd_bound=20.0, lmbd_tv=40.0, C=4.0, lmbd_l1=0.0, n_iter=200)
+        cur_img = optimize_inp(f, g, i, device, list(init_img.shape), max_val=2.5, min_val=-2.5, init=torch.tensor(cur_img).float(), lmbd_bound=20.0, lmbd_tv=60.0, C=4.0, lmbd_l1=0.0, n_iter=100)
+        plt.imshow(unnorm(cur_img[0], norm_mean, norm_std))
+        plt.axis('off')
+        plt.savefig('output/' + dataset + '_output/explanation_images_' + model_name  + '/inp_optimize/attr' + str(i), bbox_inches='tight', pad_inches = 0.03)
+        plt.close()            
+    return
+
+
+def vis_class(class_idx, rel, indices, subset_data, f, g, device, dataset, model_name, thresh=0.5):
+    class_attr = np.where(rel[class_idx, :] > thresh)[0]
+    for attr in class_attr:
+        print ('Class-attribute pair', (class_idx, attr))
+        single_pair(indices, subset_data, attr, class_idx, f, g, device, dataset, 'ref4', RI=True)
+    print ('Succesfully analyzed class ' + str(class_idx))
+    return
+
+def vis_attr(attr_idx, rel, indices, subset_data, f, g, device, dataset, model_name, thresh=0.5):
+    attr_class = np.where(rel[:, attr_idx] > thresh)[0]
+    if (len(list(attr_class)) == 0):
+        print ('No relevant class')
+        return
+    if len(attr_class) > 20:
+        attr_class = np.where(rel[:, attr_idx] > 0.6)[0]
+    for class_idx in attr_class:
+        print ('Class-attribute pair', (class_idx, attr_idx))
+        if class_idx == attr_class.max():
+            single_pair(indices, subset_data, attr_idx, class_idx, f, g, device, dataset, model_name, RI=True)
+        else:
+            single_pair(indices, subset_data, attr_idx, class_idx, f, g, device, dataset, model_name, RI=False)
+    print ('\nSuccesfully analyzed attribute ' + str(attr_idx) + '\n')
+    return
+
+
+
 
 def save_expl_images_class(indices, data, gdata, f, f_copy, g, device, dataset, model_name='', d=None):
+    # function to generate and save visualization images. Not suitable for CIFAR10 of CUB-200
     # This function assumes specific shape of indices
     if dataset == 'qdraw':
         f_gb = gb.GuidedBackprop(f)
@@ -286,10 +394,8 @@ def save_expl_images_class_cifar(indices, data, gdata, f, f_copy, g, device, dat
     return
 
 
-def analyze_img(f, f_copy, g, h, d, idx, n_attr=3, save=False, location=None):
-    #f_gb = gb.GuidedBackprop(f)
-    f_gb = f
-    f_copy, g, d = f_copy.eval(), g.eval(), d.eval()
+def analyze_img(f, g, h, d, idx, n_attr=3, save=False, location=None):
+    f_copy, g, d = f.eval(), g.eval(), d.eval()
     if dataset == 'qdraw':
         if idx > 1000:
             init_img = test_data[idx][0].unsqueeze(0)
@@ -319,13 +425,10 @@ def analyze_img(f, f_copy, g, h, d, idx, n_attr=3, save=False, location=None):
         cur_img2 = optimize_inp(f_copy, g, attr_idx2, device, list(init_img.shape), init=0.3*init_img, lmbd_bound=10.0, lmbd_tv=6.0, C=2.0, lmbd_l1=0.0)
         cur_img3 = optimize_inp(f_copy, g, attr_idx3, device, list(init_img.shape), init=0.3*init_img, lmbd_bound=10.0, lmbd_tv=6.0, C=2.0, lmbd_l1=0.0)
     else: # CIFAR
-        cur_img1 = optimize_inp(f_copy, g, attr_idx1, device, list(init_img.shape), init=0.6*init_img, lmbd_bound=20.0, lmbd_tv=20.0, C=2.0, lmbd_l1=0.0)
-        #cur_img2 = cur_img1
-        #cur_img3 = cur_img1 
+        cur_img1 = optimize_inp(f_copy, g, attr_idx1, device, list(init_img.shape), init=0.6*init_img, lmbd_bound=20.0, lmbd_tv=20.0, C=2.0, lmbd_l1=0.0) 
         cur_img2 = optimize_inp(f_copy, g, attr_idx2, device, list(init_img.shape), init=0.6*init_img, lmbd_bound=20.0, lmbd_tv=20.0, C=2.0, lmbd_l1=0.0)
         cur_img3 = optimize_inp(f_copy, g, attr_idx3, device, list(init_img.shape), init=0.6*init_img, lmbd_bound=20.0, lmbd_tv=20.0, C=2.0, lmbd_l1=0.0)
     print (attr_idx1, attr_idx2, attr_idx3)
-    #grad = grad_inp_embed(f_gb, g, device, init_img[0], attr_idx)
 
     # Make the plot
     fig = plt.figure(figsize=(16, 7))
@@ -354,17 +457,6 @@ def analyze_img(f, f_copy, g, h, d, idx, n_attr=3, save=False, location=None):
         plt.savefig(location + '/s' + str(idx) + '_rel_')
         plt.close()
  
-    #fig.add_subplot(1, 6, 3)
-    #ax[1].imshow(grad)
-
-    #fig.add_subplot(1, 6, 4)
-    #attr = g(f(init_img)[1])
-    #attr[:, i] = 0
-    #ax[2].imshow(np.moveaxis(d(attr)[0].cpu().data.numpy(), 0, -1)[:, :, 0])
-
-    #attr[:, attr_idx] = 0
-    #fig.add_subplot(1, 6, 5)
-    #ax[3].imshow(np.moveaxis(d(attr)[0].cpu().data.numpy(), 0, -1)[:, :, 0])
 
     fig = plt.figure(figsize=(16, 7))
     if dataset in ['mnist', 'fmnist', 'qdraw']:
@@ -423,13 +515,17 @@ def extract_attr_class_max(gdata, all_y, expl_data, expl_pred, n_idx=1, thresh=0
     return indices.astype(int)
 
 
-def generate_model_explanations(f, g, h, d, data, device, dataset, model_name='', subset=False):
+def generate_model_explanations(f, g, h, d, data, device, dataset, rel_thresh=0.1, model_name='', subset=False):
     if not subset:
         print ('Collecting attribute vectors on the given data')
     else:
         print ('Collecting attribute vectors on random subset of the given data')
-    gdata, all_y, subset_data, expl_data, expl_pred = collect_g_data(f, g, h, device, data, subset=subset)
-    indices2, rel = extract_attr_class_max(gdata, all_y, expl_data, expl_pred, 3, thresh=0.2)
+    if dataset in ['mnist', 'fmnist', 'qdraw', 'cifar10']:
+        batch_limit = 50
+    elif dataset == 'cub':
+        batch_limit = 250
+    gdata, all_y, subset_data, expl_data, expl_pred = collect_g_data(f, g, h, device, data, subset=subset, batch_limit=batch_limit)
+    indices2, rel = extract_attr_class_max(gdata, all_y, expl_data, expl_pred, 3, thresh=rel_thresh)
     try:
         os.mkdir('output/' + dataset + '_output/explanation_images_' + str(model_name))	
         os.mkdir('output/' + dataset + '_output/explanation_images_' + str(model_name) + '/inp_optimize')
@@ -442,20 +538,41 @@ def generate_model_explanations(f, g, h, d, data, device, dataset, model_name=''
         f_copy = networks.MyResNet(n_classes=n_classes, version='34').to(device)
     elif dataset == 'cifar10':
         f_copy = networks.MyResNet(n_classes=n_classes, version='34', in_maps=3).to(device)
-    else:
+    elif dataset in ['mnist', 'fmnist']:
         f_copy = networks.Net2_MNIST_old().to(device)
+    else:
+        print ('f_copy not defined for current dataset (eg. cub). Either define it or use other functions (eg. vis_attr, vis_class, single_pair) for interpretations')
+        return indices2, subset_data, rel
+
     f_copy.load_state_dict(checkpoint1['f_state_dict'])
     
-    if not dataset == 'cifar10':
+    if dataset in ['mnist', 'fmnist', 'qdraw']:
         save_expl_images_class(indices2, subset_data, gdata, f, f_copy, g, device, dataset, str(model_name), d)
-    else:
+    elif dataset == 'cifar10':
         # Use this when input is color image 
         save_expl_images_class_cifar(indices2, subset_data, gdata, f, f_copy, g, device, dataset, str(model_name), d)
-    return rel
+    return indices2, subset_data, rel
+
+def jitter(X, ox, oy):
+    """
+    Helper function to randomly jitter an image.
+    Inputs
+    - X: PyTorch Tensor of shape (N, C, H, W)
+    - ox, oy: number of pixels to jitter along x and y axes
+    """
+    if ox != 0:
+        left = X[:, :, :, :-ox]
+        right = X[:, :, :, -ox:]
+        X = torch.cat([right, left], dim=3)
+    if oy != 0:
+        top = X[:, :, :-oy]
+        bottom = X[:, :, -oy:]
+        X = torch.cat([bottom, top], dim=2)
+    return X
 
 
-def optimize_inp(f, g, embed_idx, device, inp_shape=[1, 1, 28, 28], init=None, max_val=1.0, min_val=0.0, lmbd_tv=1.0, lmbd_bound=1.0, C=1.0, lmbd_l1=0):
-    # initialize input with input shape and make requires_grad True
+def optimize_inp(f, g, embed_idx, device, inp_shape=[1, 1, 28, 28], init=None, max_val=1.0, min_val=0.0, lmbd_tv=1.0, lmbd_bound=1.0, C=1.0, lmbd_l1=0, n_iter=50):
+    # Function to perform Activation Maximization procedure with partial initialization. Currently does not involve jitter regularization (used for CUB). 
     f, g = f.eval().to(device), g.eval().to(device) 
     inp = torch.empty(inp_shape).to(device)
     if init is None:
@@ -464,14 +581,29 @@ def optimize_inp(f, g, embed_idx, device, inp_shape=[1, 1, 28, 28], init=None, m
     else:
         inp = 1.0 * init
     inp.requires_grad = True
-    new_lr = 0.05
-    for epoch in range(6):
-        #optimizer = optim.SGD([inp], lr=new_lr, momentum=0.9)
+    condition_old_data = dataset in ['qdraw', 'mnist', 'fmnist', 'cifar10']
+    if condition_old_data:
+        new_lr = 0.05
+    else:
+        new_lr = 0.01
+        if dataset == 'cub':
+            T = 11
+        elif 'cifar' in dataset:
+            T = 3
+    for epoch in range(12):
         optimizer = optim.Adam([inp], lr=new_lr)
-        new_lr = new_lr/2
-        for i in range(50):
+        if condition_old_data:
+            new_lr = new_lr/2
+        else:
+            new_lr = new_lr/1.5
+
+        for i in range(n_iter):
             optimizer.zero_grad()
-            output, inter = f(inp)
+            if condition_old_data:
+                output, inter = f(inp)
+            else:
+                T1, T2 = np.random.randint(-T+1, T, size=2)
+                output, inter = f(jitter(inp, T1, T2))
             embed = g(inter)
 
             loss_l1 = (inp.abs()).mean()
@@ -482,13 +614,14 @@ def optimize_inp(f, g, embed_idx, device, inp_shape=[1, 1, 28, 28], init=None, m
             loss.backward()
             inp.grad = -1 * inp.grad
             optimizer.step()
-            if (i % 51 == 0 and i == 3):
-                print (epoch, loss.item(), embed[:, embed_idx].sum(), loss_l1.item(), loss_bound.item(), loss_tv.item())
+            #if (i % 51 == 0):
+            #    print (epoch, loss.item(), embed[:, embed_idx].sum(), loss_l1.item(), loss_bound.item(), loss_tv.item())
     return inp.cpu().data.numpy()      
 
 
 
 def grad_inp_embed(f_gb, g, device, inp, embed_idx, dataset='mnist'):
+    # Function for Guided backpropagation
     # Assume inp of shape 1 x 28 x 28
     g = g.eval()
     inp = inp.unsqueeze(0)
@@ -519,10 +652,6 @@ def test(f, g, h, d, device, test_loader, lmbd_rec=0, lmbd_expl=0, lmbd_cd=0):
     test_loss_exp = 0
     test_loss_cd = 0
     exp_overlap = 0
-    vis_acc = 0
-    vis_acc_1 = 0 # Visibility prediction accuracy for visible parts
-    vis_acc_0 = 0 # Visibility prediction accuracy for hidden parts
-    num_part_visible = 0 # Number of visible parts in all the test images
     correct = 0
     #sample_data, sample_target, sample_locs = next(iter(test_loader))
     batch_size = int(sample_data.shape[0])
@@ -538,7 +667,7 @@ def test(f, g, h, d, device, test_loader, lmbd_rec=0, lmbd_expl=0, lmbd_cd=0):
         #loss_loc = criterion3(embed[:, :15], locs)
         #output = model(data)
         loss_ent = loss_cce(embed.abs(), embed.abs())
-        loss_tran = loss_ent - 2.0*loss_cce(embed.abs().mean(dim=0).unsqueeze(0), embed.abs().mean(dim=0).unsqueeze(0))
+        loss_tran = loss_ent - 1.0*loss_cce(embed.abs().mean(dim=0).unsqueeze(0), embed.abs().mean(dim=0).unsqueeze(0))
         #loss_tran = (embed_prob * (1 - embed_prob)).sum(dim=1).mean()
         loss_spa = nn.L1Loss()(embed, torch.zeros(embed.shape).to(device))
         loss_cd = lmbd_cd * (loss_tran + loss_spa)
@@ -557,15 +686,8 @@ def test(f, g, h, d, device, test_loader, lmbd_rec=0, lmbd_expl=0, lmbd_cd=0):
     test_loss_exp /= (len(test_loader.dataset) / batch_size)
     test_loss_cd /= (len(test_loader.dataset) / batch_size)
     exp_overlap = exp_overlap * 100 / len(test_loader.dataset)
-    #vis_acc = vis_acc * 100 / (15 * len(test_loader.dataset))
-    #vis_acc_1 = vis_acc_1 / num_part_visible
-    #vis_acc_0 = vis_acc_0 / (15 * len(test_loader.dataset) - num_part_visible)
-    if dataset == 'cub':
-        print('\nTest set: Average loss: {:.4f}, Acc: {}/{} ({:.0f}%)   Rec: {:.5f}   Exp: {:.5f})   ExpAgree: {:.5f}   VisAcc: {:.5f}   Vis1Acc: {:.5f}   Vis0Acc: {:.5f}\n'.format(
-        test_loss_acc, correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset), test_loss_rec, test_loss_exp, exp_overlap, vis_acc, vis_acc_1, vis_acc_0))
-        return [100. * correct / len(test_loader.dataset), test_loss_acc, test_loss_rec, test_loss_exp, exp_overlap, vis_acc, vis_acc_1, vis_acc_0]
-    elif dataset == 'mnist' or dataset == 'fmnist' or dataset == 'qdraw' or dataset == 'cifar10':
+
+    if dataset in ['mnist', 'fmnist', 'qdraw', 'cifar10', 'cub']:
         print('\nTest set: Average loss: {:.4f}, Acc: {}/{} ({:.0f}%)   Rec: {:.5f}   Exp: {:.5f})   ExpAgree: {:.5f}\n'.format(
         test_loss_acc, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset), test_loss_rec, test_loss_exp, exp_overlap))
@@ -625,7 +747,7 @@ def train(f, g, h, d, device, train_loader, optimizer, epoch, lmbd_acc=1.0, lmbd
     train_loss_ent = train_loss_ent / (len(train_loader.dataset) / batch_size)
     if dataset == 'cub_old':
         return [train_loss_acc, train_loss_rec, train_loss_exp]
-    elif dataset == 'mnist' or dataset == 'fmnist' or dataset == 'cifar10' or dataset == 'qdraw':
+    elif dataset == 'mnist' or dataset == 'fmnist' or dataset == 'cifar10' or dataset == 'qdraw' or dataset == 'cub':
         return [train_loss_acc, train_loss_rec, train_loss_exp, train_loss_spa, train_loss_ent]
 
     return [train_loss_acc, train_loss_rec, train_loss_exp, train_loss_spa, train_loss_ent]
@@ -666,82 +788,6 @@ def sparse_sense(f, g, h, data, mults):
         result.append(sparse/pred.shape[0])
     return result
 
-def sparse_h(h, gdata, data, thresh=0.1):
-    weights = 1.0 * h.fc1.weight.data.numpy()
-    weights[np.abs(weights) < thresh] = 0
-    all_y = []
-    for i in range(len(data.cat)):
-        all_y += data.info[data.mode]['samp_per_class'] * [i]
-    all_y = np.array(all_y)
-    expl_out = gdata.dot(weights.T).argmax(axis=1)
-    print (np.sum(expl_out == all_y) * 100.0 / 20000)
-    return weights
-    
-
-def samp_category(f, g, h, test_data, thresh_f=0.1, thresh_e=0.07):
-    f, g, h = f.eval(), g.eval(), h.eval()
-    mat = np.zeros([2, 2, 2, 2])
-    fuse_num = 0
-    test_loader = torch.utils.data.DataLoader(test_data, batch_size=16, shuffle=False, num_workers=0)
-    all_ent_f = []
-    all_ent_e = []
-    select_attr = []
-    store_idx_sagR = []
-    store_idx_agW = []
-    store_idx_dag = []
-    pred_corr = []
-    pred_f = []
-    pred_e = []
-    orig_f = []
-    orig_e = []
-    batch_idx = -1
-    for data in test_loader:
-        batch_idx += 1
-        inp, target = data[0].to(device), data[1].to(device)
-        output, inter = f(inp)
-        expl = h(g(inter))
-        output, expl = output.softmax(dim=1), expl.softmax(dim=1)
-        if batch_idx % 100 == 0:
-            print (batch_idx)
-        if batch_idx < 500 or batch_idx > 630:
-            continue
-        #fuse_p = (output + expl)/2
-        #fuse_num += torch.sum(fuse_p.argmax(dim=1) == target)
-        for i in range(16):
-            ent_f = (-1 * output[i] * output[i].log()).sum()
-            ent_e = (-1 * expl[i] * expl[i].log()).sum()
-            all_ent_f.append(float(ent_f))
-            all_ent_e.append(float(ent_e))
-            #if (np.random.random() > 0.999):
-                #print (output.min())
-            idx1 = int(ent_f < thresh_f)
-            idx2 = int(ent_e < thresh_e)
-            idx3 = int(output.argmax(dim=1)[i] == expl.argmax(dim=1)[i])
-            idx4 = int(output.argmax(dim=1)[i] == target[i])
-            mat[idx1, idx2, idx3, idx4] += 1
-            order = np.argsort(-1 * output[i].cpu().data.numpy())
-            pred_f.append(output[i].cpu().data.numpy()[order])
-            pred_e.append(expl[i].cpu().data.numpy()[order])
-            orig_f.append(output[i].cpu().data.numpy())
-            orig_e.append(expl[i].cpu().data.numpy())
-            pred_corr.append(np.outer(output[i].cpu().data.numpy()[order], expl[i].cpu().data.numpy()[order]).flatten())
-            #if idx1 == 1 and idx2 == 1 and idx3 == 0:
-                #print (16 * batch_idx + i, int(target[i]), int(output.argmax(dim=1)[i]), int(expl.argmax(dim=1)[i]), output[i], expl[i])
-            #if idx1 == 1 and idx2 == 1 and idx3 == 1 and idx4 == 1:
-                #store_idx_sagR.append(16 * batch_idx + i)
-            if idx3 == 0 and idx4 == 1 and int(target[i]) == 4:
-                store_idx_sagR.append(int(expl.argmax(dim=1)[i]))
-            if idx2 == 1 and idx3 == 0 and idx4 == 1 and int(target[i]) == 4:
-                store_idx_agW.append(16 * batch_idx + i) 
-            #elif idx3 == 1 and idx4 == 0:
-                #store_idx_agW.append(16 * batch_idx + i)
-            #elif idx3 == 0:
-                #store_idx_dag.append(16 * batch_idx + i)
-            #select_attr.append(g(inter)[i].cpu().data.numpy())
-    #print (fuse_num)
-    #return mat, np.array(select_attr), np.array(pred_corr), np.array(pred_f), np.array(pred_e), np.array(orig_f), np.array(orig_e)
-    return store_idx_sagR, store_idx_agW, store_idx_dag
-
 
 sample_data, sample_target = next(iter(test_loader))
 
@@ -779,7 +825,7 @@ if args[0] == 'train':
     conciseness = []
 
     # EVALUATION
-    facc, fidelity, gacc = analyze(f, g, h, d, device, test_loader, 'random/doen not matter')  
+    facc, fidelity, gacc = analyze(f, g, h, d, device, test_loader, n_classes)  
     conciseness = sparse_sense(f, g, h, test_data, mults)
 
     model_name = 'sample'
@@ -796,22 +842,32 @@ elif args[0] == 'test':
     h.load_state_dict(checkpoint1['h_state_dict'])
     d.load_state_dict(checkpoint1['d_state_dict'])
     f, g, h, d = f.eval(), g.eval(), h.eval(), d.eval()
-
+    
     # EVALUATION
     mults = [1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
     conciseness = []
-    a, b, c = analyze(f, g, h, d, device, test_loader, 'random/does not matter')
+    a, b, c = analyze(f, g, h, d, device, test_loader, n_classes)
     print ('Accuracy FLINT-f', np.sum(np.diag(a))*100/len(test_data))
     print ('Fidelity', np.sum(np.diag(b))*100/len(test_data))
     print ('Accuracy FLINT-g', np.sum(np.diag(c))*100/len(test_data))  
     conciseness = sparse_sense(f, g, h, test_data, mults)
-    print ('Conciseness', conciseness)
-
+    print ('Conciseness:', conciseness)
+    
     # INTERPRETATION
     print ('Generating explanations')
     #im1, im2 = analyze_img(f, f_copy, g, h, d, i, save=True, location='output/' + dataset + '_output/explanation_images_ref2_num4/local_int2/')
-    rel = generate_model_explanations(f, g, h, d, train_data, device, dataset, model_name='sample_model', subset=True)
-
+    if dataset == 'mnist' or dataset == 'fmnist':
+        indices, subset_data, rel = generate_model_explanations(f, g, h, d, train_data, device, dataset, 0.1, model_name='sample_model', subset=True)
+    elif dataset == 'qdraw' or dataset == 'cifar10':
+        indices, subset_data, rel = generate_model_explanations(f, g, h, d, train_data, device, dataset, 0.2, model_name='sample_model', subset=True)
+    elif dataset == 'cub':
+        indices, subset_data, rel = generate_model_explanations(f, g, h, d, train_data, device, dataset, 0.4, model_name='ref4', subset=True)
+        #vis_attr(26, rel, indices, subset_data, f, g, device, dataset, 'ref4')
+        #vis_attr(6, rel, indices, subset_data, f, g, device, dataset, 'ref4')
+        #vis_attr(120, rel, indices, subset_data, f, g, device, dataset, 'ref4')
+        #vis_attr(29, rel, indices, subset_data, f, g, device, dataset, 'ref4')
+        single_pair(indices, subset_data, 120, 53, f, g, device, dataset, 'ref4')
+        
     
 
 
