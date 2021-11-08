@@ -1,6 +1,7 @@
 import torch # All the torch modules
 import torch.nn as nn
-import resnet_torch2 as pyresnet
+import resnet_torch2 as pyresnet2
+import resnet_torch as pyresnet
 #import alexnet_torch as pyalexnet
 import torch.nn.functional as F
 #import torchvision.models as models
@@ -106,9 +107,21 @@ class Net2_CIFAR(nn.Module):
 class MyResNet(nn.Module):
     def __init__(self, version='4', bn=False, n_classes=10, in_maps=1):
         super(MyResNet, self).__init__()
-        #self.convnet = pyresnet.resnet18(pretrained=True)
-        self.convnet = pyresnet.ResNet18(version=version, bn=bn, n_classes=n_classes, in_maps=in_maps)
-        #self.convnet.requires_grad = False 
+        self.convnet = pyresnet2.ResNet18(version=version, bn=bn, n_classes=n_classes, in_maps=in_maps)
+
+        num_ftrs = self.convnet.fc.in_features
+        self.fc2 = nn.Linear(num_ftrs, n_classes)
+        self.convnet.fc = nn.Linear(num_ftrs, num_ftrs) # 200 is the number of output classes in CUB_2011/200 dataset
+
+    def forward(self, inp):
+        output, output_intermediate = self.convnet(inp)     
+        return self.fc2(output), output_intermediate
+
+class MyResNet_full(nn.Module):
+    def __init__(self, n_classes=200):
+        super(MyResNet_full, self).__init__()
+        self.convnet = pyresnet.resnet18(pretrained=True) # For CUB 
+
         num_ftrs = self.convnet.fc.in_features
         self.fc2 = nn.Linear(num_ftrs, n_classes)
         self.convnet.fc = nn.Linear(num_ftrs, num_ftrs) # 200 is the number of output classes in CUB_2011/200 dataset
@@ -241,6 +254,50 @@ class decoder(nn.Module):
         x = self.activ( self.bn4( self.conv4(x) ) )
         x = F.interpolate(x, scale_factor=2)
         x = self.activ( self.conv5(x) )
+        #x = torch.sigmoid(x)
+        #x = self.activ( self.conv4(x) )
+        #x = self.activ( self.trconv5(x) )
+        #x = self.final_conv(x)
+        return x
+
+class decoder_v2(nn.Module):
+    def __init__(self, in_size=9216):
+        super(decoder_v2, self).__init__()
+        self.fc1 = nn.Linear(in_size, 7*7*128, bias=True)
+        self.trconv1 = nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        self.trconv2 = nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        self.trconv3 = nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        self.trconv4 = nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        self.trconv5 = nn.ConvTranspose2d(16, 3, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        #self.conv4 = nn.Conv2d(8, 16, kernel_size=5, padding=2, bias=True)
+        #self.trconv5 = nn.ConvTranspose2d(16, 8, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        #self.final_conv = nn.Conv2d(16, 3, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+        self.conv5 = nn.Conv2d(64, 3, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(128)
+        self.bn2 = nn.BatchNorm2d(128)
+        self.bn3 = nn.BatchNorm2d(128)
+        self.bn4 = nn.BatchNorm2d(64)
+        self.pool = nn.MaxUnpool2d(2)
+   
+        self.activ = nn.ReLU()
+
+    def forward(self, inp):
+        x = self.fc1(inp)
+        x = x.view(-1, 128, 7, 7)
+        x = F.interpolate(x, scale_factor=2)
+        #x = self.activ( self.bn1( self.conv1(x) ) )
+        x = F.interpolate(x, scale_factor=2)
+        x = self.activ( self.bn2( self.conv2(x) ) )
+        x = F.interpolate(x, scale_factor=2)
+        x = self.activ( self.bn3( self.conv3(x) ) )
+        x = F.interpolate(x, scale_factor=2)
+        x = self.activ( self.bn4( self.conv4(x) ) )
+        x = F.interpolate(x, scale_factor=2)
+        x = self.conv5(x)
         #x = torch.sigmoid(x)
         #x = self.activ( self.conv4(x) )
         #x = self.activ( self.trconv5(x) )
@@ -419,17 +476,21 @@ class attr_CIFAR(nn.Module):
 class decode_CIFAR(nn.Module):
     def __init__(self, in_size=64*2):
         super(decode_CIFAR, self).__init__()
-        self.fc1 = nn.Linear(in_size, 64*2, bias=True)
-        self.trconv1 = nn.ConvTranspose2d(2, 8, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
-        self.trconv2 = nn.ConvTranspose2d(8, 3, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        self.fc1 = nn.Linear(in_size, 64*10, bias=True)
+        self.trconv1 = nn.ConvTranspose2d(10, 24, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        self.trconv2 = nn.ConvTranspose2d(24, 8, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
+        self.fc2 = nn.Linear(8*32*32, 3*32*32)
         self.activ = nn.ReLU()
 
     def forward(self, inp):
         x = self.fc1(inp)
-        x = x.view(-1, 2, 8, 8)
+        x = x.view(-1, 10, 8, 8)
         x = self.activ( self.trconv1(x) )
         x = self.activ( self.trconv2(x) )
+        x = x.view(-1, 8*32*32)
+        x = self.fc2(x).view(-1, 3, 32, 32)
         return x
+
 
 
 
@@ -458,10 +519,30 @@ class attr_RN18_multi(nn.Module):
         return x
 
 
+class attr_RN18_multi_v2(nn.Module):
+    def __init__(self, out_size=49*2, mid_maps=64, in_maps1=256, in_maps2=512):
+        super(attr_RN18_multi_v2, self).__init__()
+        self.conv1 = nn.Conv2d(in_maps1, mid_maps, kernel_size=3, padding=1, stride=2)
+        self.conv2 = nn.Conv2d(in_maps2, mid_maps, kernel_size=3, padding=1, stride=1)
+        self.conv3 = nn.Conv2d(2*mid_maps, mid_maps, kernel_size=3, padding=1, stride=1)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.fc1 = nn.Linear(mid_maps*3*3, out_size, bias=True)
+        #self.activ = nn.LeakyReLU()
+        self.activ = nn.ReLU()
+        self.pool = nn.AdaptiveAvgPool2d(3)
+        self.mid_maps = mid_maps
 
-
-
-
+    def forward(self, inter_list):
+        x1 = self.activ( self.conv1(inter_list[0]) )
+        x2 = self.activ( self.conv2(inter_list[1]) )
+        x = torch.cat((x1, x2), 1)
+        x = self.activ( self.conv3(x) )
+        x = self.pool(x).view(-1, self.mid_maps*3*3)
+        #x = self.fc1(x) # Till model 9
+        #x = x.view(-1, 64*3*)
+        x = self.activ(self.fc1(x))
+        #x = self.fc1(x)
+        return x
 
 
 
