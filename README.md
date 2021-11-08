@@ -6,13 +6,25 @@
 
 ### Setup
 
+Install a new conda environment with the ```env_minimal.yml``` file. You can start with [miniconda installation](https://docs.conda.io/en/latest/miniconda.html) if you are completely unfamiliar with anaconda   
+```sh
+conda env create -f env_minimal.yml
+conda activate flint
+```
 
+### Usage
 
-### Training
+```
+Command: python flint.py [mode] [dataset] [use-gpu] [model_name]
 
+Functionality available: 
+(a) mode: Training or testing phase (Options: [train , test])
 
-### Evaluation
+(b) dataset: Name of Dataset (Options: [mnist, fmnist, qdraw, cifar10, cub])
+    
+(c) use-gpu: To use GPU or CPU for computation (Options: [True, False])
 
-##### Quantitative metrics
+(d) model_name: If mode=test, takes in the name of model to be analyzed.
 
-##### Generating Visualizations
+Example : python flint.py test qdraw False v18_if5_cd_0.30_run1.pt
+```
