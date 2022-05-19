@@ -2,8 +2,6 @@
 
 * This repository contains implementation for the paper:  ["A Framework to Learn with Interpretation"](https://arxiv.org/abs/2010.09345) by *Jayneel Parekh, Pavlo Mozharovskyi, Florence d'Alché-Buc* (Presented at NeurIPS 2021).
 
-* This documentation is currently being updated.
-
 ### Setup
 
 Install a new conda environment with the ```env_minimal.yml``` file. You can start with [miniconda installation](https://docs.conda.io/en/latest/miniconda.html) if you are completely unfamiliar with anaconda   
