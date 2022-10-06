@@ -1,6 +1,6 @@
 # FLINT
 
-* This repository contains implementation for the paper:  ["A Framework to Learn with Interpretation"](https://arxiv.org/abs/2010.09345) by *Jayneel Parekh, Pavlo Mozharovskyi, Florence d'Alché-Buc* (Presented at NeurIPS 2021).
+* This repository contains implementation for the paper:  ["A Framework to Learn with Interpretation"](https://arxiv.org/abs/2010.09345) by *Jayneel Parekh, Pavlo Mozharovskyi, Florence d'Alché-Buc* (Published at NeurIPS 2021).
 
 ### Setup
 
